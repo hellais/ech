@@ -135,15 +135,11 @@ func getECHConfig(hostname string) ([]byte, error) {
 	}
 	var echConfig []byte
 	for _, param := range record.Params {
+		// ECHConfig is 5 (see: https://www.ietf.org/archive/id/draft-ietf-dnsop-svcb-https-07.html#section-14.3.2)
 		if param.Key == 0x05 {
 			echConfig = param.Value
 		}
 	}
-	log.Printf("record: %s\n", record)
-
-	// Encode the bytes into base64
-	// dataBase64 := base64.StdEncoding.EncodeToString(dataBytes)
-	// log.Printf("answer (base64): %s\n", dataBase64)
 	return echConfig, nil
 }
 
@@ -151,7 +147,7 @@ func main() {
 	//hostname := "crypto.cloudflare.com"
 	hostname := "research.cloudflare.com"
 	echBytes, err := getECHConfig(hostname)
-	if err != nil {
+	if err != nil || len(echBytes) == 0 {
 		log.Fatalf("failed to get ech config: %v", err)
 	}
 
