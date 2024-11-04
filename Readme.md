@@ -6,4 +6,6 @@ Requires go >= 1.23
 
 ## Usage
 
-go run main.go --url https://google.com
+```
+go run main.go --url="https://cloudflare-ech.com/cdn-cgi/trace"
+```
