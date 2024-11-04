@@ -1,14 +1,26 @@
+// Relevant documentation:
+// https://pkg.go.dev/crypto/tls
+// https://datatracker.ietf.org/doc/html/rfc8484
+// https://datatracker.ietf.org/doc/html/rfc1035
+// https://www.ietf.org/archive/id/draft-ietf-dnsop-svcb-https-07.html
+// https://datatracker.ietf.org/doc/draft-ietf-tls-esni/
+// https://datatracker.ietf.org/doc/html/rfc3597
+// https://test.defo.ie/iframe_tests.html
+
 package main
 
 import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -46,7 +58,7 @@ type SvcParam struct {
 	Value []byte
 }
 
-// Parse HTTPS data
+// Parse HTTPS record RR
 func parseHttpsRecord(data []byte) (*HttpsRecord, error) {
 	if len(data) < 3 {
 		return nil, fmt.Errorf("invalid data length")
@@ -86,9 +98,9 @@ func parseHttpsRecord(data []byte) (*HttpsRecord, error) {
 	return record, nil
 }
 
-func getECHConfig(hostname string) ([]byte, error) {
+func doDoHQuery(name string, qtype string) (*DNSResponse, error) {
 	client := &http.Client{}
-	url, err := url.Parse(fmt.Sprintf("https://cloudflare-dns.com/dns-query?name=%s&type=https", hostname))
+	url, err := url.Parse(fmt.Sprintf("https://cloudflare-dns.com/dns-query?name=%s&type=%s", name, qtype))
 	if err != nil {
 		log.Fatal(err)
 		return nil, err
@@ -118,16 +130,36 @@ func getECHConfig(hostname string) ([]byte, error) {
 		log.Fatal(err)
 		return nil, err
 	}
-	// Data looks like: "\# 58 00 01 00 00 01 00 03 02 68 32 00 04 00 08 a2 9f 87 4f a2 9f 88 4f 00 06 00 20 26 06 47 00 00 07 00 00 00 00 00 00 a2 9f 87 4f 26 06 47 00 00 07 00 00 00 00 00 00 a2 9f 88 4f"
-	log.Printf("answer: %s\n", dnsResponse.Answer[0].Data)
+	return &dnsResponse, nil
+}
+
+func getECHConfig(hostname string) ([]byte, error) {
+	dnsResponse, err := doDoHQuery(hostname, "https")
+	if err != nil {
+		log.Fatal(err)
+		return nil, err
+	}
+	// Data: "\# 58 [.. hex encoded RR ..]"
+	log.Printf("DoH data field answer: %s\n", dnsResponse.Answer[0].Data)
 
 	// Parse the Data field into bytes
-	dataBytes, err := hex.DecodeString(strings.Join(strings.Split(dnsResponse.Answer[0].Data, " ")[2:], ""))
+	dataParts := strings.Split(dnsResponse.Answer[0].Data, " ")
+	dataBytes, err := hex.DecodeString(strings.Join(dataParts[2:], ""))
 	if err != nil {
 		log.Fatalf("failed to decode data: %v", err)
 		return nil, err
 	}
-
+	// TODO: do we need to handle situations where we have multiple RRs?
+	// see: https://datatracker.ietf.org/doc/html/rfc3597
+	dataLen, err := strconv.Atoi(dataParts[1])
+	if err != nil {
+		log.Fatalf("failed to parse length field: %v", err)
+		return nil, err
+	}
+	if dataLen != len(dataBytes) {
+		log.Fatalf("inconsistent length: %v", err)
+		return nil, err
+	}
 	record, err := parseHttpsRecord(dataBytes)
 	if err != nil {
 		log.Fatalf("failed to decode record: %v", err)
@@ -145,8 +177,18 @@ func getECHConfig(hostname string) ([]byte, error) {
 
 func main() {
 	//hostname := "crypto.cloudflare.com"
-	hostname := "research.cloudflare.com"
-	echBytes, err := getECHConfig(hostname)
+	//hostname := "research.cloudflare.com"
+	//hostname := "cloudflare-ech.com"
+	var targetUrl string
+	flag.StringVar(&targetUrl, "url", "https://cloudflare-ech.com/cdn-cgi/trace", "url to measure")
+	flag.Parse()
+
+	u, err := url.Parse(targetUrl)
+	if err != nil {
+		log.Fatalf("invalid URL: %v", err)
+	}
+	echBytes, err := getECHConfig(u.Hostname())
+
 	if err != nil || len(echBytes) == 0 {
 		log.Fatalf("failed to get ech config: %v", err)
 	}
@@ -155,24 +197,19 @@ func main() {
 		EncryptedClientHelloConfigList: echBytes,
 	}
 
-	conn, err := tls.Dial("tcp", fmt.Sprintf("%s:443", hostname), tlsConfig)
-	if err != nil {
-		log.Fatalf("could not connect to server: %v", err)
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
 	}
-	defer conn.Close()
-	fmt.Println("Connected to server via TLS")
-
-	message := fmt.Sprintf("GET /cdn-cgi/trace HTTP/1.1\nHost: %s\n\n", hostname)
-	_, err = conn.Write([]byte(message))
+	resp, err := httpClient.Get(u.String())
 	if err != nil {
-		log.Fatalf("failed to send message: %v", err)
+		log.Fatalf("failed to perform request %s: %v", u.String(), err)
 	}
-	fmt.Printf("Sent message: %s\n", message)
-
-	reply := make([]byte, 1024)
-	n, err := conn.Read(reply)
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("failed to read response: %v", err)
+		log.Fatalf("failed to read response body: %v", err)
 	}
-	fmt.Printf("Received reply: %s\n", string(reply[:n]))
+	fmt.Printf("Received reply: %s\n", string(bodyBytes))
 }
