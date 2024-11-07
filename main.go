@@ -139,6 +139,10 @@ func getECHConfig(hostname string) ([]byte, error) {
 		log.Fatal(err)
 		return nil, err
 	}
+    if len(dnsResponse.Answer) < 1 {
+		log.Fatal("dnsResponse.Answer is empty")
+		return nil, err
+    }
 	// Data: "\# 58 [.. hex encoded RR ..]"
 	log.Printf("DoH data field answer: %s\n", dnsResponse.Answer[0].Data)
 
@@ -211,5 +215,5 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to read response body: %v", err)
 	}
-	fmt.Printf("Received reply: %s\n", string(bodyBytes))
+	fmt.Printf("Received reply: len=%d\n", len(bodyBytes))
 }
