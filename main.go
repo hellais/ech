@@ -24,6 +24,11 @@ import (
 	"strings"
 )
 
+type ParsedEchConfig struct {
+	echConfigs []echConfig
+	raw        []byte
+}
+
 type DNSQuestion struct {
 	Name string `json:"name"`
 	Type int    `json:"type"`
@@ -133,16 +138,16 @@ func doDoHQuery(name string, qtype string) (*DNSResponse, error) {
 	return &dnsResponse, nil
 }
 
-func getECHConfig(hostname string) ([]byte, error) {
+func getECHConfig(hostname string) (*ParsedEchConfig, error) {
 	dnsResponse, err := doDoHQuery(hostname, "https")
 	if err != nil {
 		log.Fatal(err)
 		return nil, err
 	}
-    if len(dnsResponse.Answer) < 1 {
+	if len(dnsResponse.Answer) < 1 {
 		log.Fatal("dnsResponse.Answer is empty")
 		return nil, err
-    }
+	}
 	// Data: "\# 58 [.. hex encoded RR ..]"
 	log.Printf("DoH data field answer: %s\n", dnsResponse.Answer[0].Data)
 
@@ -169,14 +174,21 @@ func getECHConfig(hostname string) ([]byte, error) {
 		log.Fatalf("failed to decode record: %v", err)
 		return nil, err
 	}
-	var echConfig []byte
+	var ech ParsedEchConfig
 	for _, param := range record.Params {
 		// ECHConfig is 5 (see: https://www.ietf.org/archive/id/draft-ietf-dnsop-svcb-https-07.html#section-14.3.2)
 		if param.Key == 0x05 {
-			echConfig = param.Value
+			ech.raw = param.Value
+			break
 		}
 	}
-	return echConfig, nil
+	p, err := parseECHConfigList(ech.raw)
+	if err != nil {
+		log.Fatalf("failed to parse echConfig: %v", err)
+		return &ech, err
+	}
+	ech.echConfigs = p
+	return &ech, nil
 }
 
 func main() {
@@ -191,14 +203,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid URL: %v", err)
 	}
-	echBytes, err := getECHConfig(u.Hostname())
+	parsedConfig, err := getECHConfig(u.Hostname())
 
-	if err != nil || len(echBytes) == 0 {
+	if err != nil || len(parsedConfig.raw) == 0 {
 		log.Fatalf("failed to get ech config: %v", err)
 	}
 
+	for _, ech := range parsedConfig.echConfigs {
+		log.Printf("public_name: %s", string(ech.PublicName))
+		log.Printf("pk: %s", hex.EncodeToString(ech.PublicKey))
+		log.Printf("kemid: %d", ech.KemID)
+		log.Printf("extensions: %v", ech.Extensions)
+		log.Printf("version: %d", ech.Version)
+		log.Printf("cipher_suite: %v", ech.SymmetricCipherSuite)
+	}
+
 	tlsConfig := &tls.Config{
-		EncryptedClientHelloConfigList: echBytes,
+		EncryptedClientHelloConfigList: parsedConfig.raw,
 	}
 
 	httpClient := &http.Client{
@@ -216,4 +237,5 @@ func main() {
 		log.Fatalf("failed to read response body: %v", err)
 	}
 	fmt.Printf("Received reply: len=%d\n", len(bodyBytes))
+	fmt.Printf("%s\n", string(bodyBytes))
 }
